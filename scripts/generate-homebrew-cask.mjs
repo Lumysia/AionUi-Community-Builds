@@ -20,7 +20,7 @@ function renderCask(repository, version, armSha256, intelSha256) {
 
   url "https://github.com/${repository}/releases/download/v#{version}/AionUi-#{version}-mac-#{arch}.dmg"
   name "AionUi Community"
-  desc "Community build of the unmodified AionUi open-source application"
+  desc "Community AionUi build with a transparent WebUI login bypass patch"
   homepage "https://github.com/${repository}"
 
   livecheck do

@@ -20,6 +20,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  COMMUNITY_PATCH: patches/remove-webui-login.patch
   UPSTREAM_REPOSITORY: iOfficeAI/AionUi
 
 jobs:
@@ -29,6 +30,7 @@ jobs:
     outputs:
       build: ${{ steps.release.outputs.build }}
       commit: ${{ steps.release.outputs.commit }}
+      patch_sha256: ${{ steps.release.outputs.patch_sha256 }}
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
     env:
@@ -80,6 +82,9 @@ jobs:
             exit 1
           fi
 
+          PATCH_SHA256=$(gh api "repos/${GITHUB_REPOSITORY}/contents/${COMMUNITY_PATCH}?ref=${GITHUB_SHA}" --jq '.content' | \
+            tr -d '\n' | base64 --decode | sha256sum | cut -d' ' -f1)
+
           BUILD=true
           if COMMUNITY_RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" 2>/dev/null); then
             COMPLETE=true
@@ -94,6 +99,7 @@ jobs:
               "AionUi-${VERSION}-linux-amd64.deb"
               'SHA256SUMS'
               'UPSTREAM_SOURCE.txt'
+              'remove-webui-login.patch'
             )
             for asset in "${EXPECTED[@]}"; do
               jq -e --arg asset "$asset" \
@@ -118,7 +124,8 @@ jobs:
             if [ "$COMPLETE" = "true" ] && \
               [ "$(jq -r '.draft' <<<"$COMMUNITY_RELEASE")" = "false" ] && \
               [ "$(jq -r '.prerelease' <<<"$COMMUNITY_RELEASE")" = "false" ] && \
-              grep -Fq "$SHA" <<<"$(jq -r '.body // ""' <<<"$COMMUNITY_RELEASE")"; then
+              grep -Fq "$SHA" <<<"$(jq -r '.body // ""' <<<"$COMMUNITY_RELEASE")" && \
+              grep -Fq "$PATCH_SHA256" <<<"$(jq -r '.body // ""' <<<"$COMMUNITY_RELEASE")"; then
               BUILD=false
               echo "Community release $TAG is already complete; build skipped"
             fi
@@ -127,6 +134,7 @@ jobs:
           {
             echo "build=$BUILD"
             echo "commit=$SHA"
+            echo "patch_sha256=$PATCH_SHA256"
             echo "tag=$TAG"
             echo "version=$VERSION"
           } >>"$GITHUB_OUTPUT"
@@ -135,13 +143,58 @@ jobs:
             echo ""
             echo "- Tag: \`$TAG\`"
             echo "- Commit: \`$SHA\`"
+            echo "- Community patch SHA256: \`$PATCH_SHA256\`"
             echo "- Build required: \`$BUILD\`"
           } >>"$GITHUB_STEP_SUMMARY"
 
-  build:
-    name: Build ${{ matrix.platform }}
+  verify-patch:
+    name: Verify community patch
     needs: detect
     if: needs.detect.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact upstream source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ needs.detect.outputs.commit }}
+          persist-credentials: false
+
+      - name: Verify source revision
+        env:
+          EXPECTED_COMMIT: ${{ needs.detect.outputs.commit }}
+          EXPECTED_VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$(node -p "require('./package.json').version")" = "$EXPECTED_VERSION"
+          test -z "$(git status --short)"
+
+      - name: Check out community patch
+        uses: actions/checkout@v6
+        with:
+          path: .community
+          persist-credentials: false
+
+      - name: Apply and verify community patch
+        env:
+          EXPECTED_PATCH_SHA256: ${{ needs.detect.outputs.patch_sha256 }}
+        run: |
+          set -euo pipefail
+          PATCH=".community/${COMMUNITY_PATCH}"
+          test "$(sha256sum "$PATCH" | cut -d' ' -f1)" = "$EXPECTED_PATCH_SHA256"
+          git apply --check "$PATCH"
+          git apply "$PATCH"
+          git apply --reverse --check "$PATCH"
+          git diff --check
+          rm -rf .community
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: [detect, verify-patch]
+    if: needs.detect.outputs.build == 'true' && needs.verify-patch.result == 'success'
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -191,6 +244,26 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
           test "$(node -p "require('./package.json').version")" = "$EXPECTED_VERSION"
           test -z "$(git status --short)"
+
+      - name: Check out community patch
+        uses: actions/checkout@v6
+        with:
+          path: .community
+          persist-credentials: false
+
+      - name: Apply community patch
+        shell: bash
+        env:
+          EXPECTED_PATCH_SHA256: ${{ needs.detect.outputs.patch_sha256 }}
+        run: |
+          set -euo pipefail
+          PATCH=".community/${COMMUNITY_PATCH}"
+          test "$(sha256sum "$PATCH" | cut -d' ' -f1)" = "$EXPECTED_PATCH_SHA256"
+          git apply --check "$PATCH"
+          git apply "$PATCH"
+          git apply --reverse --check "$PATCH"
+          git diff --check
+          rm -rf .community
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -316,11 +389,18 @@ jobs:
     permissions:
       contents: write
     env:
+      COMMUNITY_PATCH_SHA256: ${{ needs.detect.outputs.patch_sha256 }}
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ needs.detect.outputs.tag }}
       UPSTREAM_COMMIT: ${{ needs.detect.outputs.commit }}
       VERSION: ${{ needs.detect.outputs.version }}
     steps:
+      - name: Check out community metadata
+        uses: actions/checkout@v6
+        with:
+          path: community
+          persist-credentials: false
+
       - name: Download build artifacts
         uses: actions/download-artifact@v7
         with:
@@ -357,11 +437,13 @@ jobs:
           done
 
           (cd release-assets && sha256sum "${EXPECTED[@]}" >SHA256SUMS)
+          cp "community/${COMMUNITY_PATCH}" "release-assets/$(basename "$COMMUNITY_PATCH")"
           cat >release-assets/UPSTREAM_SOURCE.txt <<EOF
           Upstream repository: https://github.com/${UPSTREAM_REPOSITORY}
           Upstream tag: ${TAG}
           Upstream commit: ${UPSTREAM_COMMIT}
-          Source modifications: none
+          Community patch: ${COMMUNITY_PATCH}
+          Community patch SHA256: ${COMMUNITY_PATCH_SHA256}
           EOF
 
       - name: Publish GitHub Release
@@ -369,11 +451,12 @@ jobs:
         run: |
           set -euo pipefail
           NOTES=$(cat <<EOF
-          Community build of the unmodified open-source AionUi source.
+          Community build of AionUi with a transparent WebUI login bypass patch.
 
           - Upstream tag: [${TAG}](https://github.com/${UPSTREAM_REPOSITORY}/releases/tag/${TAG})
           - Upstream commit: [${UPSTREAM_COMMIT}](https://github.com/${UPSTREAM_REPOSITORY}/commit/${UPSTREAM_COMMIT})
-          - Source changes: none
+          - Community patch: [${COMMUNITY_PATCH}](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/${COMMUNITY_PATCH})
+          - Patch SHA256: \`${COMMUNITY_PATCH_SHA256}\`
           - Packaging: unsigned community binaries built by this repository's GitHub Actions
 
           This is a community distribution and is not an official binary published by iOfficeAI.
@@ -558,8 +641,8 @@ jobs:
           PackageUrl: https://github.com/$env:GITHUB_REPOSITORY
           License: Apache-2.0
           LicenseUrl: $licenseUrl
-          ShortDescription: Community build of the unmodified AionUi open-source application
-          Description: Unofficial community distribution built from the exact upstream AionUi release source.
+          ShortDescription: Community AionUi build with a transparent WebUI login bypass patch
+          Description: Unofficial community distribution built from an exact upstream release plus the published login bypass patch.
           Moniker: aionui-community
           Tags:
             - ai

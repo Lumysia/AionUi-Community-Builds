@@ -1,8 +1,8 @@
 # AionUi Community Builds
 
-Automated, unsigned community builds of the unmodified [AionUi](https://github.com/iOfficeAI/AionUi) open-source releases.
+Automated, unsigned community builds of [AionUi](https://github.com/iOfficeAI/AionUi) with a transparent WebUI login bypass patch.
 
-This repository is not affiliated with iOfficeAI and does not modify AionUi, remove login, or patch application behavior. Every GitHub Release records the exact upstream tag and commit used, and includes SHA256 checksums.
+This repository is not affiliated with iOfficeAI. Every GitHub Release records the exact upstream tag, commit, applied patch, and SHA256 checksums.
 
 ## Platforms
 
@@ -12,9 +12,9 @@ This repository is not affiliated with iOfficeAI and does not modify AionUi, rem
 | Windows  | arm64, x64           | NSIS EXE |
 | Linux    | arm64, x64           | DEB      |
 
-The release workflow checks upstream every 12 hours. It only accepts published stable tags matching `vMAJOR.MINOR.PATCH`, checks out the resolved upstream commit directly, and invokes upstream's existing build system.
+The release workflow checks upstream every 12 hours. It accepts published stable tags matching `vMAJOR.MINOR.PATCH`, checks out the resolved upstream commit, verifies and applies the repository patch, then invokes upstream's build system.
 
-Completed versions are idempotently skipped.
+If the patch no longer applies, the workflow fails before platform builds or publication. Completed versions are idempotently skipped when their upstream commit, patch checksum, and artifacts match.
 
 ## Downloads
 
@@ -26,6 +26,7 @@ Each release includes:
 
 - `SHA256SUMS` with checksums for every binary package.
 - `UPSTREAM_SOURCE.txt` with the exact upstream repository, tag, and commit.
+- `remove-webui-login.patch` with the applied community source change.
 
 ```bash
 sha256sum --check SHA256SUMS
