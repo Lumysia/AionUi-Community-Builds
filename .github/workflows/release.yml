@@ -88,7 +88,10 @@ jobs:
             exit 1
           fi
 
-          mapfile -t PATCHES < <(find ".community/${COMMUNITY_PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | LC_ALL=C sort)
+          PATCHES=()
+          while IFS= read -r patch; do
+            PATCHES+=("$patch")
+          done < <(find ".community/${COMMUNITY_PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | LC_ALL=C sort)
           [ "${#PATCHES[@]}" -gt 0 ] || { echo '::error::No community patches found'; exit 1; }
           PATCH_SET_SHA256=$(
             for patch in "${PATCHES[@]}"; do
@@ -199,7 +202,10 @@ jobs:
           EXPECTED_PATCH_SET_SHA256: ${{ needs.detect.outputs.patch_set_sha256 }}
         run: |
           set -euo pipefail
-          mapfile -t PATCHES < <(find ".community/${COMMUNITY_PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | LC_ALL=C sort)
+          PATCHES=()
+          while IFS= read -r patch; do
+            PATCHES+=("$patch")
+          done < <(find ".community/${COMMUNITY_PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | LC_ALL=C sort)
           [ "${#PATCHES[@]}" -gt 0 ]
           PATCH_SET_SHA256=$(
             for patch in "${PATCHES[@]}"; do
@@ -278,7 +284,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t PATCHES < <(find ".community/${COMMUNITY_PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | LC_ALL=C sort)
+          PATCHES=()
+          while IFS= read -r patch; do
+            PATCHES+=("$patch")
+          done < <(find ".community/${COMMUNITY_PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | LC_ALL=C sort)
           [ "${#PATCHES[@]}" -gt 0 ]
           for patch in "${PATCHES[@]}"; do
             git apply --check "$patch"
@@ -460,7 +469,10 @@ jobs:
           done
 
           (cd release-assets && sha256sum "${EXPECTED[@]}" >SHA256SUMS)
-          mapfile -t PATCHES < <(find "community/${COMMUNITY_PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | LC_ALL=C sort)
+          PATCHES=()
+          while IFS= read -r patch; do
+            PATCHES+=("$patch")
+          done < <(find "community/${COMMUNITY_PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | LC_ALL=C sort)
           [ "${#PATCHES[@]}" -gt 0 ]
           for patch in "${PATCHES[@]}"; do
             cp "$patch" "release-assets/$(basename "$patch")"
