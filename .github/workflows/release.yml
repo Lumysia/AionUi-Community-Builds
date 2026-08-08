@@ -623,13 +623,14 @@ jobs:
           $segments = $env:PACKAGE_ID.Split('.')
           $packagePath = "manifests/$($segments[0].Substring(0, 1).ToLowerInvariant())/$($segments -join '/')"
           $versionPath = "$packagePath/$env:VERSION"
+          $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'AionUi-Community-Builds' }
 
           function Test-WingetPath([string]$Path) {
-            $response = gh api "repos/microsoft/winget-pkgs/contents/$Path" 2>&1
-            if ($LASTEXITCODE -eq 0) { return $true }
-            $responseText = $response -join "`n"
-            if ($responseText -notmatch 'HTTP 404') { throw $responseText }
-            return $false
+            $uri = "https://api.github.com/repos/microsoft/winget-pkgs/contents/$Path"
+            $response = Invoke-WebRequest -Uri $uri -Headers $headers -SkipHttpErrorCheck
+            if ($response.StatusCode -eq 200) { return $true }
+            if ($response.StatusCode -eq 404) { return $false }
+            throw "WinGet contents API returned HTTP $($response.StatusCode)"
           }
 
           if (Test-WingetPath $versionPath) {
@@ -639,9 +640,9 @@ jobs:
           }
 
           $query = "repo:microsoft/winget-pkgs is:pr is:open in:title `"$env:PACKAGE_ID $env:VERSION`""
-          $existing = gh api -X GET search/issues -f q=$query --jq '.total_count'
-          if ($LASTEXITCODE -ne 0) { throw 'Failed to search existing WinGet PRs' }
-          if ([int]$existing -gt 0) {
+          $searchUri = "https://api.github.com/search/issues?q=$([Uri]::EscapeDataString($query))&per_page=1"
+          $existing = Invoke-RestMethod -Uri $searchUri -Headers $headers
+          if ([int]$existing.total_count -gt 0) {
             "mode=none" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             Write-Host 'Matching WinGet PR is already open'
           } elseif (Test-WingetPath $packagePath) {
