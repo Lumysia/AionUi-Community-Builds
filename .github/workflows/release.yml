@@ -667,7 +667,7 @@ jobs:
 
           $releaseUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:TAG"
           $licenseUrl = "https://github.com/iOfficeAI/AionUi/blob/$env:TAG/LICENSE"
-          $releaseDate = $release.published_at.Substring(0, 10)
+          $releaseDate = $release.published_at.ToString('yyyy-MM-dd')
           $x64Sha = $x64Asset.digest.Replace('sha256:', '')
           $arm64Sha = $arm64Asset.digest.Replace('sha256:', '')
           New-Item -ItemType Directory -Path manifests | Out-Null
