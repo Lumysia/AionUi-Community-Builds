@@ -37,9 +37,10 @@ Upstream AionCore already runs with `--local` and uses
 
 - Build macOS arm64/x64, Windows arm64/x64, and Linux arm64/x64 from one SHA.
 - Run every 12 hours and support manual and repository dispatch.
-- Publish the applied patch, its SHA256, upstream tag/SHA, `SHA256SUMS`, and
-  `UPSTREAM_SOURCE.txt` with every Release.
-- Consider a Release complete only when upstream SHA, patch SHA256, and all
+- Apply every `patches/*.patch` file in bytewise filename order.
+- Publish all applied patches, their set SHA256, upstream tag/SHA,
+  `SHA256SUMS`, and `UPSTREAM_SOURCE.txt` with every Release.
+- Consider a Release complete only when upstream SHA, patch set SHA256, and all
   expected artifacts match.
 - Never publish after patch verification or a platform build fails.
 - Public metadata must say this is an unofficial patched community build.
@@ -60,7 +61,7 @@ merged versions or matching open PRs. Never expose `WINGET_TOKEN`.
 ```text
 actionlint .github/workflows/release.yml
 bunx oxfmt --check AGENTS.md README.md .github/workflows/release.yml scripts/*.mjs
-git apply --check patches/remove-webui-login.patch
+git apply --check patches/*.patch
 git diff --check
 ```
 
