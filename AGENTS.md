@@ -33,6 +33,12 @@ Upstream AionCore already runs with `--local` and uses
 - Hide the browser logout action.
 - Do not patch AionCore unless upstream architecture changes require it.
 
+## Update Source
+
+- Automatic and manual updates must use this repository's Releases.
+- Never direct community users to official unpatched update binaries.
+- Publish updater channel metadata for every platform and architecture.
+
 ## Releases
 
 - Build macOS arm64/x64, Windows arm64/x64, and Linux arm64/x64 from one SHA.

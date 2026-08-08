@@ -20,6 +20,8 @@ If any patch no longer applies, the workflow fails before platform builds or pub
 
 Download the package for your platform from [GitHub Releases](https://github.com/Lumysia/AionUi-Community-Builds/releases).
 
+In-app update checks and downloads use this community repository, so installed patched builds remain on the community release channel.
+
 ## Verification
 
 Each release includes:

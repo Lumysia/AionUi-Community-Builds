@@ -111,6 +111,12 @@ jobs:
               "AionUi-${VERSION}-win-x64.exe"
               "AionUi-${VERSION}-linux-arm64.deb"
               "AionUi-${VERSION}-linux-amd64.deb"
+              'latest.yml'
+              'latest-win-arm64.yml'
+              'latest-mac.yml'
+              'latest-arm64-mac.yml'
+              'latest-linux.yml'
+              'latest-linux-arm64.yml'
               'SHA256SUMS'
               'UPSTREAM_SOURCE.txt'
             )
@@ -380,7 +386,7 @@ jobs:
           npm_config_target_arch: ${{ matrix.arch }}
         run: ${{ matrix.command }}
 
-      - name: Verify expected installers
+      - name: Verify expected build outputs
         shell: bash
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -388,19 +394,20 @@ jobs:
         run: |
           set -euo pipefail
           case "$PLATFORM" in
-            macos-arm64) FILES=("AionUi-${VERSION}-mac-arm64.dmg" "AionUi-${VERSION}-mac-arm64.zip") ;;
-            macos-x64) FILES=("AionUi-${VERSION}-mac-x64.dmg" "AionUi-${VERSION}-mac-x64.zip") ;;
-            windows-arm64) FILES=("AionUi-${VERSION}-win-arm64.exe") ;;
-            windows-x64) FILES=("AionUi-${VERSION}-win-x64.exe") ;;
-            linux-arm64) FILES=("AionUi-${VERSION}-linux-arm64.deb") ;;
-            linux-x64) FILES=("AionUi-${VERSION}-linux-amd64.deb") ;;
+            macos-arm64) FILES=("AionUi-${VERSION}-mac-arm64.dmg" "AionUi-${VERSION}-mac-arm64.zip"); METADATA=latest-mac.yml ;;
+            macos-x64) FILES=("AionUi-${VERSION}-mac-x64.dmg" "AionUi-${VERSION}-mac-x64.zip"); METADATA=latest-mac.yml ;;
+            windows-arm64) FILES=("AionUi-${VERSION}-win-arm64.exe"); METADATA=latest.yml ;;
+            windows-x64) FILES=("AionUi-${VERSION}-win-x64.exe"); METADATA=latest.yml ;;
+            linux-arm64) FILES=("AionUi-${VERSION}-linux-arm64.deb"); METADATA=latest-linux-arm64.yml ;;
+            linux-x64) FILES=("AionUi-${VERSION}-linux-amd64.deb"); METADATA=latest-linux.yml ;;
             *) echo "::error::Unknown platform $PLATFORM"; exit 1 ;;
           esac
           for file in "${FILES[@]}"; do
             test -s "out/$file" || { echo "::error::Missing out/$file"; exit 1; }
           done
+          test -s "out/$METADATA" || { echo "::error::Missing out/$METADATA"; exit 1; }
 
-      - name: Upload installers
+      - name: Upload build outputs
         uses: actions/upload-artifact@v6
         with:
           name: community-${{ matrix.platform }}
@@ -409,6 +416,7 @@ jobs:
             out/*.dmg
             out/*.deb
             out/AionUi-*-mac-*.zip
+            out/latest*.yml
           if-no-files-found: error
           retention-days: 1
 
@@ -453,6 +461,13 @@ jobs:
             cp "$file" "release-assets/$name"
           done < <(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name 'AionUi-*-mac-*.zip' \) | sort)
 
+          cp artifacts/community-windows-x64/latest.yml release-assets/latest.yml
+          cp artifacts/community-windows-arm64/latest.yml release-assets/latest-win-arm64.yml
+          cp artifacts/community-macos-x64/latest-mac.yml release-assets/latest-mac.yml
+          cp artifacts/community-macos-arm64/latest-mac.yml release-assets/latest-arm64-mac.yml
+          cp artifacts/community-linux-x64/latest-linux.yml release-assets/latest-linux.yml
+          cp artifacts/community-linux-arm64/latest-linux-arm64.yml release-assets/latest-linux-arm64.yml
+
           EXPECTED=(
             "AionUi-${VERSION}-mac-arm64.dmg"
             "AionUi-${VERSION}-mac-arm64.zip"
@@ -462,6 +477,12 @@ jobs:
             "AionUi-${VERSION}-win-x64.exe"
             "AionUi-${VERSION}-linux-arm64.deb"
             "AionUi-${VERSION}-linux-amd64.deb"
+            'latest.yml'
+            'latest-win-arm64.yml'
+            'latest-mac.yml'
+            'latest-arm64-mac.yml'
+            'latest-linux.yml'
+            'latest-linux-arm64.yml'
           )
           test "$(find release-assets -type f | wc -l)" -eq "${#EXPECTED[@]}"
           for file in "${EXPECTED[@]}"; do
