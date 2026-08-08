@@ -1,0 +1,596 @@
+name: Build Upstream Release
+
+on:
+  schedule:
+    - cron: '17 3,15 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Optional stable upstream tag (for example, v2.1.52)'
+        required: false
+        type: string
+  repository_dispatch:
+    types: [release-check]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: community-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: iOfficeAI/AionUi
+
+jobs:
+  detect:
+    name: Detect stable upstream release
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.release.outputs.build }}
+      commit: ${{ steps.release.outputs.commit }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REQUESTED_TAG: ${{ inputs.upstream_tag || github.event.client_payload.upstream_tag || '' }}
+    steps:
+      - name: Resolve upstream tag and commit
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -n "$REQUESTED_TAG" ]; then
+            TAG="$REQUESTED_TAG"
+            if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Only stable vMAJOR.MINOR.PATCH tags are supported: $TAG"
+              exit 1
+            fi
+            RELEASE=$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/tags/${TAG}")
+          else
+            RELEASE=$(gh api -X GET "repos/${UPSTREAM_REPOSITORY}/releases" -f per_page=100 | \
+              jq -c 'map(select(.draft == false and .prerelease == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))) | first')
+            TAG=$(jq -r '.tag_name' <<<"$RELEASE")
+          fi
+
+          if [ "$RELEASE" = "null" ] || [ "$(jq -r '.draft or .prerelease' <<<"$RELEASE")" != "false" ]; then
+            echo "::error::No eligible stable upstream release was found"
+            exit 1
+          fi
+
+          REF=$(gh api "repos/${UPSTREAM_REPOSITORY}/git/ref/tags/${TAG}")
+          SHA=$(jq -r '.object.sha' <<<"$REF")
+          TYPE=$(jq -r '.object.type' <<<"$REF")
+          while [ "$TYPE" = "tag" ]; do
+            TAG_OBJECT=$(gh api "repos/${UPSTREAM_REPOSITORY}/git/tags/${SHA}")
+            SHA=$(jq -r '.object.sha' <<<"$TAG_OBJECT")
+            TYPE=$(jq -r '.object.type' <<<"$TAG_OBJECT")
+          done
+          if [ "$TYPE" != "commit" ]; then
+            echo "::error::Upstream tag did not resolve to a commit"
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"
+          PACKAGE_VERSION=$(gh api "repos/${UPSTREAM_REPOSITORY}/contents/package.json?ref=${SHA}" --jq '.content' | \
+            tr -d '\n' | base64 --decode | jq -r '.version')
+          if [ "$VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "::error::Tag $TAG does not match package.json version $PACKAGE_VERSION at $SHA"
+            exit 1
+          fi
+
+          BUILD=true
+          if COMMUNITY_RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" 2>/dev/null); then
+            COMPLETE=true
+            EXPECTED=(
+              "AionUi-${VERSION}-mac-arm64.dmg"
+              "AionUi-${VERSION}-mac-arm64.zip"
+              "AionUi-${VERSION}-mac-x64.dmg"
+              "AionUi-${VERSION}-mac-x64.zip"
+              "AionUi-${VERSION}-win-arm64.exe"
+              "AionUi-${VERSION}-win-x64.exe"
+              "AionUi-${VERSION}-linux-arm64.deb"
+              "AionUi-${VERSION}-linux-amd64.deb"
+              'SHA256SUMS'
+              'UPSTREAM_SOURCE.txt'
+            )
+            for asset in "${EXPECTED[@]}"; do
+              jq -e --arg asset "$asset" \
+                'any(.assets[]; .name == $asset and .state == "uploaded" and .size > 0)' \
+                <<<"$COMMUNITY_RELEASE" >/dev/null || COMPLETE=false
+            done
+
+            if [ "$COMPLETE" = "true" ]; then
+              CHECKSUM_DIR="${RUNNER_TEMP}/release-checksums"
+              mkdir -p "$CHECKSUM_DIR"
+              gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+                --pattern SHA256SUMS --dir "$CHECKSUM_DIR"
+              for asset in "${EXPECTED[@]:0:8}"; do
+                CHECKSUM=$(awk -v file="$asset" '$2 == file {print $1}' "$CHECKSUM_DIR/SHA256SUMS")
+                DIGEST=$(jq -r --arg asset "$asset" \
+                  '.assets[] | select(.name == $asset) | .digest // ""' \
+                  <<<"$COMMUNITY_RELEASE")
+                [ "$DIGEST" = "sha256:${CHECKSUM}" ] || COMPLETE=false
+              done
+            fi
+
+            if [ "$COMPLETE" = "true" ] && \
+              [ "$(jq -r '.draft' <<<"$COMMUNITY_RELEASE")" = "false" ] && \
+              [ "$(jq -r '.prerelease' <<<"$COMMUNITY_RELEASE")" = "false" ] && \
+              grep -Fq "$SHA" <<<"$(jq -r '.body // ""' <<<"$COMMUNITY_RELEASE")"; then
+              BUILD=false
+              echo "Community release $TAG is already complete; build skipped"
+            fi
+          fi
+
+          {
+            echo "build=$BUILD"
+            echo "commit=$SHA"
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+          } >>"$GITHUB_OUTPUT"
+          {
+            echo "## Upstream release"
+            echo ""
+            echo "- Tag: \`$TAG\`"
+            echo "- Commit: \`$SHA\`"
+            echo "- Build required: \`$BUILD\`"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: detect
+    if: needs.detect.outputs.build == 'true'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            os: macos-14
+            arch: arm64
+            command: node scripts/build-with-builder.js arm64 --mac --arm64
+          - platform: macos-x64
+            os: macos-14
+            arch: x64
+            command: node scripts/build-with-builder.js x64 --mac --x64
+          - platform: windows-x64
+            os: windows-2022
+            arch: x64
+            command: node scripts/build-with-builder.js x64 --win --x64
+          - platform: windows-arm64
+            os: windows-11-arm
+            arch: arm64
+            command: node scripts/build-with-builder.js arm64 --win --arm64
+          - platform: linux-x64
+            os: ubuntu-latest
+            arch: x64
+            command: node scripts/build-with-builder.js x64 --linux --x64
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+            arch: arm64
+            command: node scripts/build-with-builder.js arm64 --linux --arm64
+    steps:
+      - name: Check out exact upstream source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ needs.detect.outputs.commit }}
+          persist-credentials: false
+
+      - name: Verify source revision
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.detect.outputs.commit }}
+          EXPECTED_VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$(node -p "require('./package.json').version")" = "$EXPECTED_VERSION"
+          test -z "$(git status --short)"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ${{ env.LOCALAPPDATA }}\electron-builder\Cache
+          key: electron-${{ matrix.platform }}-${{ matrix.arch }}-${{ hashFiles('bun.lock') }}
+          restore-keys: electron-${{ matrix.platform }}-${{ matrix.arch }}-
+
+      - name: Install dependencies
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: bun install --frozen-lockfile
+
+      - name: Set up MSBuild
+        if: startsWith(matrix.platform, 'windows')
+        uses: microsoft/setup-msbuild@v2
+        with:
+          vs-version: '17.0'
+
+      - name: Install Windows native build tools
+        if: startsWith(matrix.platform, 'windows')
+        shell: pwsh
+        run: bun install --global node-gyp
+
+      - name: Install Windows ARM64 toolchain
+        if: matrix.platform == 'windows-arm64'
+        continue-on-error: true
+        shell: pwsh
+        run: >-
+          choco install visualstudio2022buildtools --yes
+          --params "'--add Microsoft.VisualStudio.Component.VC.Tools.ARM64
+          --add Microsoft.VisualStudio.Component.Windows11SDK.22000
+          --includeRecommended'"
+
+      - name: Install Linux packaging dependencies
+        if: startsWith(matrix.platform, 'linux')
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential fakeroot dpkg-dev libasound2-dev libatk-bridge2.0-dev libdrm2 libgtk-3-dev libnss3-dev libsqlite3-dev libxkbcommon-dev libxrandr2 libxss1 pkg-config python3
+
+      - name: Rebuild native modules for target architecture
+        shell: bash
+        env:
+          npm_config_arch: ${{ matrix.arch }}
+          npm_config_target_arch: ${{ matrix.arch }}
+          npm_config_runtime: electron
+        run: bunx electron-builder install-app-deps --arch=${{ matrix.arch }}
+
+      - name: Build with upstream build system
+        shell: bash
+        env:
+          AIONUI_BACKEND_ARCH: ${{ matrix.arch }}
+          CI: 'true'
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          ELECTRON_BUILDER_COMPRESSION_LEVEL: '9'
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          NODE_OPTIONS: '--max-old-space-size=8192'
+          SENTRY_UPLOAD_SOURCE_MAPS: 'false'
+          npm_config_arch: ${{ matrix.arch }}
+          npm_config_target_arch: ${{ matrix.arch }}
+        run: ${{ matrix.command }}
+
+      - name: Verify expected installers
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          case "$PLATFORM" in
+            macos-arm64) FILES=("AionUi-${VERSION}-mac-arm64.dmg" "AionUi-${VERSION}-mac-arm64.zip") ;;
+            macos-x64) FILES=("AionUi-${VERSION}-mac-x64.dmg" "AionUi-${VERSION}-mac-x64.zip") ;;
+            windows-arm64) FILES=("AionUi-${VERSION}-win-arm64.exe") ;;
+            windows-x64) FILES=("AionUi-${VERSION}-win-x64.exe") ;;
+            linux-arm64) FILES=("AionUi-${VERSION}-linux-arm64.deb") ;;
+            linux-x64) FILES=("AionUi-${VERSION}-linux-amd64.deb") ;;
+            *) echo "::error::Unknown platform $PLATFORM"; exit 1 ;;
+          esac
+          for file in "${FILES[@]}"; do
+            test -s "out/$file" || { echo "::error::Missing out/$file"; exit 1; }
+          done
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v6
+        with:
+          name: community-${{ matrix.platform }}
+          path: |
+            out/*.exe
+            out/*.dmg
+            out/*.deb
+            out/AionUi-*-mac-*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish community release
+    needs: [detect, build]
+    if: needs.detect.outputs.build == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.detect.outputs.tag }}
+      UPSTREAM_COMMIT: ${{ needs.detect.outputs.commit }}
+      VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: community-*
+          path: artifacts
+
+      - name: Validate and prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          while IFS= read -r file; do
+            name=$(basename "$file")
+            if [ -e "release-assets/$name" ]; then
+              echo "::error::Duplicate release asset $name"
+              exit 1
+            fi
+            cp "$file" "release-assets/$name"
+          done < <(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name 'AionUi-*-mac-*.zip' \) | sort)
+
+          EXPECTED=(
+            "AionUi-${VERSION}-mac-arm64.dmg"
+            "AionUi-${VERSION}-mac-arm64.zip"
+            "AionUi-${VERSION}-mac-x64.dmg"
+            "AionUi-${VERSION}-mac-x64.zip"
+            "AionUi-${VERSION}-win-arm64.exe"
+            "AionUi-${VERSION}-win-x64.exe"
+            "AionUi-${VERSION}-linux-arm64.deb"
+            "AionUi-${VERSION}-linux-amd64.deb"
+          )
+          test "$(find release-assets -type f | wc -l)" -eq "${#EXPECTED[@]}"
+          for file in "${EXPECTED[@]}"; do
+            test -s "release-assets/$file" || { echo "::error::Missing $file"; exit 1; }
+          done
+
+          (cd release-assets && sha256sum "${EXPECTED[@]}" >SHA256SUMS)
+          cat >release-assets/UPSTREAM_SOURCE.txt <<EOF
+          Upstream repository: https://github.com/${UPSTREAM_REPOSITORY}
+          Upstream tag: ${TAG}
+          Upstream commit: ${UPSTREAM_COMMIT}
+          Source modifications: none
+          EOF
+
+      - name: Publish GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOTES=$(cat <<EOF
+          Community build of the unmodified open-source AionUi source.
+
+          - Upstream tag: [${TAG}](https://github.com/${UPSTREAM_REPOSITORY}/releases/tag/${TAG})
+          - Upstream commit: [${UPSTREAM_COMMIT}](https://github.com/${UPSTREAM_REPOSITORY}/commit/${UPSTREAM_COMMIT})
+          - Source changes: none
+          - Packaging: unsigned community binaries built by this repository's GitHub Actions
+
+          This is a community distribution and is not an official binary published by iOfficeAI.
+          EOF
+          )
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --draft=false --latest --notes "$NOTES" --title "AionUi Community ${TAG}" --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" release-assets/* --latest --notes "$NOTES" --title "AionUi Community ${TAG}" --target "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY"
+          fi
+
+  homebrew:
+    name: Update Homebrew tap
+    needs: [detect, build, publish]
+    if: >-
+      always() && vars.HOMEBREW_TAP_ENABLED == 'true' &&
+      (needs.publish.result == 'success' ||
+      (needs.detect.outputs.build == 'false' && needs.publish.result == 'skipped'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.detect.outputs.tag }}
+      VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - name: Check out release automation
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Download release checksums
+        shell: bash
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir release-metadata
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository_owner }}/homebrew-aionui
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update cask
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARM_SHA=$(awk -v file="AionUi-${VERSION}-mac-arm64.dmg" '$2 == file {print $1}' release-metadata/SHA256SUMS)
+          INTEL_SHA=$(awk -v file="AionUi-${VERSION}-mac-x64.dmg" '$2 == file {print $1}' release-metadata/SHA256SUMS)
+          test -n "$ARM_SHA" && test -n "$INTEL_SHA"
+          mkdir -p homebrew-tap/Casks
+          node scripts/generate-homebrew-cask.mjs "$GITHUB_REPOSITORY" "$VERSION" "$ARM_SHA" "$INTEL_SHA" \
+            >homebrew-tap/Casks/aionui-community.rb
+
+          if [ -z "$(git -C homebrew-tap status --porcelain -- Casks/aionui-community.rb)" ]; then
+            echo "Homebrew cask is already current"
+            exit 0
+          fi
+          git -C homebrew-tap config user.name 'github-actions[bot]'
+          git -C homebrew-tap config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C homebrew-tap add Casks/aionui-community.rb
+          git -C homebrew-tap commit -m "chore: update AionUi Community to ${VERSION}"
+          git -C homebrew-tap push origin HEAD:main
+
+  winget:
+    name: Submit WinGet update
+    needs: [detect, build, publish]
+    if: >-
+      always() && vars.WINGET_ENABLED == 'true' &&
+      (needs.publish.result == 'success' ||
+      (needs.detect.outputs.build == 'false' && needs.publish.result == 'skipped'))
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+      PACKAGE_ID: ${{ vars.WINGET_PACKAGE_ID }}
+      TAG: ${{ needs.detect.outputs.tag }}
+      VERSION: ${{ needs.detect.outputs.version }}
+      WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      - name: Validate WinGet configuration
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PACKAGE_ID)) { throw 'WINGET_PACKAGE_ID is required' }
+          if ([string]::IsNullOrWhiteSpace($env:WINGET_CREATE_GITHUB_TOKEN)) { throw 'WINGET_TOKEN is required' }
+
+      - name: Determine submission mode
+        id: state
+        shell: pwsh
+        run: |
+          $segments = $env:PACKAGE_ID.Split('.')
+          $packagePath = "manifests/$($segments[0].Substring(0, 1).ToLowerInvariant())/$($segments -join '/')"
+          $versionPath = "$packagePath/$env:VERSION"
+
+          function Test-WingetPath([string]$Path) {
+            $response = gh api "repos/microsoft/winget-pkgs/contents/$Path" 2>&1
+            if ($LASTEXITCODE -eq 0) { return $true }
+            if ($response -notmatch 'HTTP 404') { throw $response }
+            return $false
+          }
+
+          if (Test-WingetPath $versionPath) {
+            "mode=none" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            Write-Host "WinGet version $env:VERSION is already merged"
+            exit 0
+          }
+
+          $existing = gh pr list --repo microsoft/winget-pkgs --state open --search "`"$env:PACKAGE_ID $env:VERSION`" in:title" --json number --jq 'length'
+          if ([int]$existing -gt 0) {
+            "mode=none" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            Write-Host 'Matching WinGet PR is already open'
+          } elseif (Test-WingetPath $packagePath) {
+            "mode=update" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          } else {
+            "mode=new" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          }
+
+      - name: Download WingetCreate
+        if: steps.state.outputs.mode != 'none'
+        shell: pwsh
+        run: Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+
+      - name: Submit initial package with WingetCreate
+        if: steps.state.outputs.mode == 'new'
+        shell: pwsh
+        run: |
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:TAG" | ConvertFrom-Json
+          $x64Asset = $release.assets | Where-Object name -eq "AionUi-$env:VERSION-win-x64.exe"
+          $arm64Asset = $release.assets | Where-Object name -eq "AionUi-$env:VERSION-win-arm64.exe"
+          if (-not $x64Asset -or -not $arm64Asset) { throw 'Windows release assets are incomplete' }
+
+          $releaseUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:TAG"
+          $licenseUrl = "https://github.com/iOfficeAI/AionUi/blob/$env:TAG/LICENSE"
+          $releaseDate = $release.published_at.Substring(0, 10)
+          $x64Sha = $x64Asset.digest.Replace('sha256:', '')
+          $arm64Sha = $arm64Asset.digest.Replace('sha256:', '')
+          New-Item -ItemType Directory -Path manifests | Out-Null
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+
+          $versionManifest = @"
+          PackageIdentifier: $env:PACKAGE_ID
+          PackageVersion: $env:VERSION
+          DefaultLocale: en-US
+          ManifestType: version
+          ManifestVersion: 1.10.0
+          "@
+          $installerManifest = @"
+          PackageIdentifier: $env:PACKAGE_ID
+          PackageVersion: $env:VERSION
+          InstallerLocale: en-US
+          InstallerType: nullsoft
+          Scope: user
+          UpgradeBehavior: install
+          InstallModes:
+            - interactive
+            - silent
+            - silentWithProgress
+          Protocols:
+            - aionui
+          ReleaseDate: $releaseDate
+          Installers:
+            - Architecture: x64
+              InstallerUrl: $($x64Asset.browser_download_url)
+              InstallerSha256: $x64Sha
+            - Architecture: arm64
+              InstallerUrl: $($arm64Asset.browser_download_url)
+              InstallerSha256: $arm64Sha
+          ManifestType: installer
+          ManifestVersion: 1.10.0
+          "@
+          $localeManifest = @"
+          PackageIdentifier: $env:PACKAGE_ID
+          PackageVersion: $env:VERSION
+          PackageLocale: en-US
+          Publisher: Lumysia
+          PublisherUrl: https://github.com/Lumysia
+          PublisherSupportUrl: https://github.com/$env:GITHUB_REPOSITORY/issues
+          Author: iOfficeAI
+          PackageName: AionUi Community
+          PackageUrl: https://github.com/$env:GITHUB_REPOSITORY
+          License: Apache-2.0
+          LicenseUrl: $licenseUrl
+          ShortDescription: Community build of the unmodified AionUi open-source application
+          Description: Unofficial community distribution built from the exact upstream AionUi release source.
+          Moniker: aionui-community
+          Tags:
+            - ai
+            - chat
+            - electron
+          ReleaseNotesUrl: $releaseUrl
+          ManifestType: defaultLocale
+          ManifestVersion: 1.10.0
+          "@
+
+          [IO.File]::WriteAllText("manifests/$env:PACKAGE_ID.yaml", $versionManifest, $utf8)
+          [IO.File]::WriteAllText("manifests/$env:PACKAGE_ID.installer.yaml", $installerManifest, $utf8)
+          [IO.File]::WriteAllText("manifests/$env:PACKAGE_ID.locale.en-US.yaml", $localeManifest, $utf8)
+          .\wingetcreate.exe submit manifests `
+            --prtitle "New package: $env:PACKAGE_ID $env:VERSION" `
+            --no-open
+
+      - name: Submit package update with WingetCreate
+        if: steps.state.outputs.mode == 'update'
+        shell: pwsh
+        run: |
+          $x64 = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/AionUi-$env:VERSION-win-x64.exe|x64"
+          $arm64 = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/AionUi-$env:VERSION-win-arm64.exe|arm64"
+          $releaseUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:TAG"
+          $releaseDate = (gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:TAG" --jq '.published_at').Substring(0, 10)
+
+          .\wingetcreate.exe update $env:PACKAGE_ID `
+            --version $env:VERSION `
+            --urls $x64 $arm64 `
+            --release-date $releaseDate `
+            --release-notes-url $releaseUrl `
+            --prtitle "New version: $env:PACKAGE_ID $env:VERSION" `
+            --submit `
+            --no-open
