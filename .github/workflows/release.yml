@@ -674,6 +674,7 @@ jobs:
           $utf8 = New-Object System.Text.UTF8Encoding($false)
 
           $versionManifest = @"
+          # yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.1.10.0.schema.json
           PackageIdentifier: $env:PACKAGE_ID
           PackageVersion: $env:VERSION
           DefaultLocale: en-US
@@ -681,6 +682,7 @@ jobs:
           ManifestVersion: 1.10.0
           "@
           $installerManifest = @"
+          # yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
           PackageIdentifier: $env:PACKAGE_ID
           PackageVersion: $env:VERSION
           InstallerLocale: en-US
@@ -705,6 +707,7 @@ jobs:
           ManifestVersion: 1.10.0
           "@
           $localeManifest = @"
+          # yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
           PackageIdentifier: $env:PACKAGE_ID
           PackageVersion: $env:VERSION
           PackageLocale: en-US
