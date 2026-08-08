@@ -638,7 +638,9 @@ jobs:
             exit 0
           }
 
-          $existing = gh pr list --repo microsoft/winget-pkgs --state open --search "`"$env:PACKAGE_ID $env:VERSION`" in:title" --json number --jq 'length'
+          $query = "repo:microsoft/winget-pkgs is:pr is:open in:title `"$env:PACKAGE_ID $env:VERSION`""
+          $existing = gh api -X GET search/issues -f q=$query --jq '.total_count'
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to search existing WinGet PRs' }
           if ([int]$existing -gt 0) {
             "mode=none" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             Write-Host 'Matching WinGet PR is already open'
