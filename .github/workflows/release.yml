@@ -610,7 +610,8 @@ jobs:
           function Test-WingetPath([string]$Path) {
             $response = gh api "repos/microsoft/winget-pkgs/contents/$Path" 2>&1
             if ($LASTEXITCODE -eq 0) { return $true }
-            if ($response -notmatch 'HTTP 404') { throw $response }
+            $responseText = $response -join "`n"
+            if ($responseText -notmatch 'HTTP 404') { throw $responseText }
             return $false
           }
 
