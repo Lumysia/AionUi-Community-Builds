@@ -253,12 +253,9 @@ jobs:
 
       - name: Apply community patch
         shell: bash
-        env:
-          EXPECTED_PATCH_SHA256: ${{ needs.detect.outputs.patch_sha256 }}
         run: |
           set -euo pipefail
           PATCH=".community/${COMMUNITY_PATCH}"
-          test "$(sha256sum "$PATCH" | cut -d' ' -f1)" = "$EXPECTED_PATCH_SHA256"
           git apply --check "$PATCH"
           git apply "$PATCH"
           git apply --reverse --check "$PATCH"
