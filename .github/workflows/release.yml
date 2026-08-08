@@ -219,10 +219,8 @@ jobs:
             done | sha256sum | cut -d' ' -f1
           )
           test "$PATCH_SET_SHA256" = "$EXPECTED_PATCH_SET_SHA256"
-          for patch in "${PATCHES[@]}"; do
-            git apply --check "$patch"
-            git apply "$patch"
-          done
+          git apply --check "${PATCHES[@]}"
+          git apply "${PATCHES[@]}"
           git diff --check
           rm -rf .community
 
@@ -295,10 +293,8 @@ jobs:
             PATCHES+=("$patch")
           done < <(find ".community/${COMMUNITY_PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | LC_ALL=C sort)
           [ "${#PATCHES[@]}" -gt 0 ]
-          for patch in "${PATCHES[@]}"; do
-            git apply --check "$patch"
-            git apply "$patch"
-          done
+          git apply --check "${PATCHES[@]}"
+          git apply "${PATCHES[@]}"
           git diff --check
           rm -rf .community
 
