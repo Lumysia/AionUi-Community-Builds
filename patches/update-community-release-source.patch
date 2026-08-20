@@ -90,15 +90,19 @@ diff --git a/packages/desktop/src/renderer/components/settings/SettingsModal/con
 index 03ef53777..65c59ffa5 100644
 --- a/packages/desktop/src/renderer/components/settings/SettingsModal/contents/AboutModalContent.tsx
 +++ b/packages/desktop/src/renderer/components/settings/SettingsModal/contents/AboutModalContent.tsx
-@@ -117,7 +117,7 @@ const AboutModalContent: React.FC = () => {
-     },
-     {
-       title: t('settings.updateLog'),
--      url: 'https://github.com/iOfficeAI/AionUi/releases',
-+      url: 'https://github.com/Lumysia/AionUi-Community-Builds/releases',
-       icon: <Right theme='outline' size='16' />,
-     },
-     {
+@@ -59,7 +59,11 @@ const AboutModalContent: React.FC = () => {
+ 
+   const openLink = async (url: string) => {
+     try {
+-      await openExternalUrl(url);
++      await openExternalUrl(
++        url === 'https://github.com/iOfficeAI/AionUi/releases'
++          ? 'https://github.com/Lumysia/AionUi-Community-Builds/releases'
++          : url
++      );
+     } catch (error) {
+       console.log('Failed to open link:', error);
+     }
 diff --git a/packages/desktop/src/renderer/components/settings/useUpdateNotificationController.ts b/packages/desktop/src/renderer/components/settings/useUpdateNotificationController.ts
 index 24716a523..5e9515677 100644
 --- a/packages/desktop/src/renderer/components/settings/useUpdateNotificationController.ts
