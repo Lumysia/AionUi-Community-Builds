@@ -623,7 +623,7 @@ jobs:
           $segments = $env:PACKAGE_ID.Split('.')
           $packagePath = "manifests/$($segments[0].Substring(0, 1).ToLowerInvariant())/$($segments -join '/')"
           $versionPath = "$packagePath/$env:VERSION"
-          $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'AionUi-Community-Builds' }
+          $headers = @{ Accept = 'application/vnd.github+json'; Authorization = "Bearer $env:GH_TOKEN"; 'X-GitHub-Api-Version' = '2022-11-28'; 'User-Agent' = 'AionUi-Community-Builds' }
 
           function Test-WingetPath([string]$Path) {
             $uri = "https://api.github.com/repos/microsoft/winget-pkgs/contents/$Path"
